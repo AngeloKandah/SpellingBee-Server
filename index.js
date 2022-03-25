@@ -3,7 +3,6 @@ import http from 'http';
 import getWords from './wordGenerator.js';
 import generateCode from './createRoomCode.js';
 import { Server } from 'socket.io';
-import { createAdapter } from '@socket.io/mongo-adapter';
 import { MongoClient } from 'mongodb';
 
 const DB = 'spellingbee';
@@ -25,18 +24,23 @@ try {
   // collection already exists
 }
 const mongoCollection = mongoClient.db(DB).collection(COLLECTION);
-//io.adapter(createAdapter(mongoCollection));
 
 io.on('connection', (socket) => {
-  console.log('client connected: ', socket.id);
-
-  socket.on('joiningRoom', ({ roomCode }) => {
+  socket.on('joiningRoom', async ({ roomCode }) => {
     socket.join(roomCode);
-    console.log(`${socket.id} joined ${roomCode}`);
-    mongoCollection.findOneAndUpdate(
+    await mongoCollection.updateOne(
       { room: roomCode },
       { $push: { members: socket.id } }
     );
+    const session = await mongoCollection.findOne({
+      room: roomCode,
+    });
+    if (!session) {
+      // Add 'no room made with this ID'
+      return;
+    }
+    const { members, turn, wordList } = session;
+    socket.emit('word', wordList[turn % members.length]);
   });
 
   socket.on('createRoom', async () => {
@@ -44,34 +48,37 @@ io.on('connection', (socket) => {
     socket.join(roomCode);
     io.to(roomCode).emit('roomCode', roomCode);
     const words = await getWords();
-    mongoCollection.insertOne({
+    await mongoCollection.insertOne({
       room: roomCode,
       members: [socket.id],
       turn: 0,
       wordList: words,
     });
+    socket.emit('word', words[0]);
   });
 
-  socket.on('checkAnswer', (arg, callback) => {
-    console.log(arg);
-    callback('received');
+  socket.on('checkSpelling', ({ attempt, word }, callback) => {
+    if (attempt === word) {
+      callback(true);
+      return;
+    }
+    callback(false);
   });
 
-  socket.on('disconnecting', (reason) => {
+  socket.on('nextTurn', (arg, callback) => {});
+
+  socket.on('disconnecting', async () => {
     const roomCode = [...socket.rooms][1];
-    mongoCollection.findOneAndUpdate(
+    await mongoCollection.findOneAndUpdate(
       { room: roomCode },
       { $pull: { members: socket.id } }
     );
-    console.log(reason);
+    await mongoCollection.deleteOne({
+      room: roomCode,
+      members: { $exists: true, $size: 0 },
+    });
   });
 });
-
-/* setInterval(async () => {
-  const words = await getWords();
-  console.log(words);
-  io.to('WVYBZE').emit('wordList', words);
-}, 2000); */
 
 server.listen(5000, () => {
   console.log('listening on port 5000');
