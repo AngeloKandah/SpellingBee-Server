@@ -1,7 +1,7 @@
 import express from 'express';
 import http from 'http';
 import getWords from './wordGenerator.js';
-import generateCode from './createRoomCode.js';
+import { nanoid } from 'nanoid'
 import { Server } from 'socket.io';
 import { MongoClient } from 'mongodb';
 
@@ -44,7 +44,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('createRoom', async () => {
-    const roomCode = generateCode();
+    const roomCode = nanoid();
     socket.join(roomCode);
     io.to(roomCode).emit('roomCode', roomCode);
     const words = await getWords();
