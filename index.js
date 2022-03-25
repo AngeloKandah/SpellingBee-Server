@@ -1,7 +1,7 @@
 import express from 'express';
 import http from 'http';
 import getWords from './wordGenerator.js';
-import { nanoid } from 'nanoid'
+import { nanoid } from 'nanoid';
 import { Server } from 'socket.io';
 import { MongoClient } from 'mongodb';
 
@@ -26,23 +26,6 @@ try {
 const mongoCollection = mongoClient.db(DB).collection(COLLECTION);
 
 io.on('connection', (socket) => {
-  socket.on('joiningRoom', async ({ roomCode }) => {
-    socket.join(roomCode);
-    await mongoCollection.updateOne(
-      { room: roomCode },
-      { $push: { members: socket.id } }
-    );
-    const session = await mongoCollection.findOne({
-      room: roomCode,
-    });
-    if (!session) {
-      // Add 'no room made with this ID'
-      return;
-    }
-    const { members, turn, wordList } = session;
-    socket.emit('word', wordList[turn % members.length]);
-  });
-
   socket.on('createRoom', async () => {
     const roomCode = nanoid();
     socket.join(roomCode);
@@ -57,6 +40,23 @@ io.on('connection', (socket) => {
     socket.emit('word', words[0]);
   });
 
+  socket.on('joiningRoom', async ({ roomCode }) => {
+    const session = await mongoCollection.findOne({
+      room: roomCode,
+    });
+    if (!session) {
+      // Add 'no room made with this ID'
+      return;
+    }
+    socket.join(roomCode);
+    await mongoCollection.updateOne(
+      { room: roomCode },
+      { $push: { members: socket.id } }
+    );
+    const { members, turn, wordList } = session;
+    socket.emit('word', wordList[turn % members.length]);
+  });
+
   socket.on('checkSpelling', ({ attempt, word }, callback) => {
     if (attempt === word) {
       callback(true);
@@ -65,7 +65,21 @@ io.on('connection', (socket) => {
     callback(false);
   });
 
-  socket.on('nextTurn', (arg, callback) => {});
+  socket.on('nextTurn', async (arg, callback) => {
+    const roomCode = [...socket.rooms][1];
+    const clients = [...io.sockets.adapter.rooms.get(roomCode)];
+    const {
+      value: { turn: turnBeforeInc, wordList },
+    } = await mongoCollection.findOneAndUpdate(
+      { room: roomCode },
+      { $inc: { turn: 1 } }
+    );
+    const turn = turnBeforeInc + 1;
+    // This gets the person's turn;
+    const whosTurn = clients[turn % clients.length];
+    const nextWord = wordList[turn];
+    io.to(roomCode).emit('nextWord', { nextWord, whosTurn });
+  });
 
   socket.on('disconnecting', async () => {
     const roomCode = [...socket.rooms][1];
