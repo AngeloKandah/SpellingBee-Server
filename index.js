@@ -32,8 +32,8 @@ io.on('connection', (socket) => {
     joiningRoom(socket, roomCode, callback)
   );
 
-  socket.on('checkSpelling', ({ attempt, word }, callback) =>
-    checkSpelling(attempt, word, callback)
+  socket.on('endTurn', ({ attempt, word }, callback) =>
+    endTurn(socket, attempt, word, callback)
   );
 
   socket.on('nextTurn', () => nextTurn(socket));
@@ -55,7 +55,7 @@ async function createRoom(socket, callback) {
     turn: 0,
     wordList: words,
   });
-  callback({ word: words[0], startGameButton: true, roomCode });
+  callback({ word: words[0], roomCode });
 }
 
 async function joiningRoom(socket, roomCode, callback) {
@@ -75,15 +75,12 @@ async function joiningRoom(socket, roomCode, callback) {
     { $push: { members: socket.id } }
   );
   const { members, turn, wordList } = session;
-  callback(wordList[turn % members.length]);
+  callback(wordList[turn % (members.length + 1)]);
 }
 
-function checkSpelling(attempt, word, callback) {
-  if (attempt === word) {
-    callback(true);
-    return;
-  }
-  callback(false);
+async function endTurn(socket, attempt, word, callback) {
+  await nextTurn(socket);
+  callback(attempt === word);
 }
 
 async function nextTurn(socket) {
@@ -115,11 +112,8 @@ async function removePlayer(socket, roomCode) {
     { room: roomCode },
     { $pull: { members: socket.id } }
   );
-  const { members } = value || { members: [] };
-  if (members.length === 1) {
-    return true;
-  }
-  return false;
+  const { members = [] } = value || {};
+  return members.length === 1;
 }
 
 async function removeSession(roomCode) {
