@@ -75,7 +75,9 @@ async function joiningRoom(socket, roomCode, callback) {
     { $push: { members: socket.id } }
   );
   const { members, turn, wordList } = session;
-  callback(wordList[turn % (members.length + 1)]);
+  const players = [...members, socket.id];
+  io.to(roomCode).emit('newPlayer', players);
+  callback({ word: wordList[turn % (members.length + 1)] });
 }
 
 async function endTurn(socket, attempt, word, callback) {
@@ -94,9 +96,9 @@ async function nextTurn(socket) {
   );
   const turn = turnBeforeInc + 1;
   // This gets the person's turn;
-  const whosTurn = clients[turn % clients.length];
-  const nextWord = wordList[turn];
-  io.to(roomCode).emit('nextWord', { nextWord, whosTurn });
+  const idOfWhosTurn = clients[turn % clients.length];
+  const word = wordList[turn];
+  io.to(roomCode).emit('nextWord', { word, idOfWhosTurn });
 }
 
 async function disconnecting(socket) {
