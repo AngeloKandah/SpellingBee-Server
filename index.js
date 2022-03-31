@@ -26,14 +26,16 @@ try {
 const mongoCollection = mongoClient.db(DB).collection(COLLECTION);
 
 io.on('connection', (socket) => {
-  socket.on('createRoom', (callback) => createRoom(socket, callback));
-
-  socket.on('joiningRoom', ({ roomCode }, callback) =>
-    joiningRoom(socket, roomCode, callback)
+  socket.on('createRoom', ({ playerName }, callback) =>
+    createRoom(socket, playerName, callback)
   );
 
-  socket.on('endTurn', ({ attempt, word }, callback) =>
-    endTurn(socket, attempt, word, callback)
+  socket.on('joiningRoom', ({ roomCode, playerName }, callback) =>
+    joiningRoom(socket, roomCode, playerName, callback)
+  );
+
+  socket.on('endTurn', ({ attempt, currentWord }, callback) =>
+    endTurn(socket, attempt, currentWord, callback)
   );
 
   socket.on('nextTurn', () => nextTurn(socket));
@@ -45,44 +47,54 @@ server.listen(5000, () => {
   console.log('listening on port 5000');
 });
 
-async function createRoom(socket, callback) {
+async function createRoom(socket, playerName, callback) {
   const roomCode = nanoid();
   socket.join(roomCode);
   const words = await getWords();
   await mongoCollection.insertOne({
     room: roomCode,
-    members: [socket.id],
+    players: [{ id: socket.id, playerName }],
     turn: 0,
     wordList: words,
   });
-  callback({ word: words[0], roomCode });
+  callback({ currentWord: words[0], roomCode });
 }
 
-async function joiningRoom(socket, roomCode, callback) {
+async function joiningRoom(socket, roomCode, playerName, callback) {
   const session = await mongoCollection.findOne({
     room: roomCode,
   });
   if (!session) {
-    // Add 'no room made with this ID'
     callback(
       'This is not a valid room, please create one or check the code you entered'
     );
     return;
   }
+  if (!playerName) {
+    // Get a random name because their name is empty string
+  }
   socket.join(roomCode);
   await mongoCollection.updateOne(
     { room: roomCode },
-    { $push: { members: socket.id } }
+    {
+      $push: {
+        players: { id: socket.id, playerName },
+      },
+    }
   );
-  const { members, turn, wordList } = session;
-  const players = [...members, socket.id];
+  const { players: playersBeforeNew, turn, wordList } = session;
+  const players = [
+    ...Object.values(playersBeforeNew),
+    { id: socket.id, playerName },
+  ];
   io.to(roomCode).emit('newPlayer', players);
-  callback({ word: wordList[turn % (members.length + 1)] });
+  const currentWord = wordList[turn];
+  callback(currentWord);
 }
 
-async function endTurn(socket, attempt, word, callback) {
+async function endTurn(socket, attempt, currentWord, callback) {
   await nextTurn(socket);
-  callback(attempt === word);
+  callback(attempt === currentWord);
 }
 
 async function nextTurn(socket) {
@@ -95,15 +107,18 @@ async function nextTurn(socket) {
     { $inc: { turn: 1 } }
   );
   const turn = turnBeforeInc + 1;
-  // This gets the person's turn;
-  const idOfWhosTurn = clients[turn % clients.length];
-  const word = wordList[turn];
-  io.to(roomCode).emit('nextWord', { word, idOfWhosTurn });
+  const currentPlayerId = clients[turn % clients.length];
+  const currentWord = wordList[turn];
+  io.to(roomCode).emit('nextWord', { currentWord, currentPlayerId });
 }
 
 async function disconnecting(socket) {
   const roomCode = [...socket.rooms][1];
-  const isSessionOver = await removePlayer(socket, roomCode);
+  const { isSessionOver, remainingPlayers } = await removePlayer(
+    socket,
+    roomCode
+  );
+  io.to(roomCode).emit('newPlayer', remainingPlayers);
   if (isSessionOver) {
     removeSession(roomCode);
   }
@@ -112,15 +127,19 @@ async function disconnecting(socket) {
 async function removePlayer(socket, roomCode) {
   const { value } = await mongoCollection.findOneAndUpdate(
     { room: roomCode },
-    { $pull: { members: socket.id } }
+    { $pull: { players: { id: socket.id } } }
   );
-  const { members = [] } = value || {};
-  return members.length === 1;
+  const { players = {} } = value || [];
+  const remainingPlayers = Object.values(players).filter(
+    ({ id }) => id != socket.id
+  );
+  const isSessionOver = remainingPlayers.length === 0;
+  return { isSessionOver, remainingPlayers };
 }
 
 async function removeSession(roomCode) {
   await mongoCollection.deleteOne({
     room: roomCode,
-    members: { $exists: true, $size: 0 },
+    players: { $exists: true, $size: 0 },
   });
 }
