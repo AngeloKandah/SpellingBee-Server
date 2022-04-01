@@ -1,10 +1,11 @@
 import * as fs from 'fs/promises';
 
-export default async function getWords(numberOfWords) {
-  const indicesOfWords = [...new Array(100)].map(() =>
-    Math.round(Math.random() * 178187)
-  );
+export default async function getWords(numberOfWords = 100) {
   const file = await fs.readFile('words.json');
-  const words = indicesOfWords.map((index) => JSON.parse(file)[index]);
+  const wordList = JSON.parse(file);
+  const indicesOfWords = [...new Array(numberOfWords)].map(() =>
+    Math.round(Math.random() * wordList.length)
+  );
+  const words = indicesOfWords.map((index) => wordList[index]);
   return words;
 }
