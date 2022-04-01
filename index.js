@@ -53,7 +53,7 @@ async function createRoom(socket, playerName, callback) {
   const words = await getWords();
   await mongoCollection.insertOne({
     room: roomCode,
-    players: [{ id: socket.id, playerName }],
+    players: [{ id: socket.id, playerName, lives: 3 }],
     turn: 0,
     wordList: words,
   });
@@ -78,7 +78,7 @@ async function joiningRoom(socket, roomCode, playerName, callback) {
     { room: roomCode },
     {
       $push: {
-        players: { id: socket.id, playerName },
+        players: { id: socket.id, playerName, lives: 3 },
       },
     }
   );
@@ -87,29 +87,50 @@ async function joiningRoom(socket, roomCode, playerName, callback) {
     ...Object.values(playersBeforeNew),
     { id: socket.id, playerName },
   ];
-  io.to(roomCode).emit('newPlayer', players);
+  io.to(roomCode).emit('playerListUpdate', players);
   const currentWord = wordList[turn];
   callback(currentWord);
 }
 
 async function endTurn(socket, attempt, currentWord, callback) {
+  const isCorrect = attempt === currentWord;
+  if (!isCorrect) {
+    await decrementLives(socket);
+  }
   await nextTurn(socket);
-  callback(attempt === currentWord);
+  callback(isCorrect);
 }
 
 async function nextTurn(socket) {
   const roomCode = [...socket.rooms][1];
-  const clients = [...io.sockets.adapter.rooms.get(roomCode)];
   const {
-    value: { turn: turnBeforeInc, wordList },
+    value: { turn: turnBeforeInc, wordList, players },
   } = await mongoCollection.findOneAndUpdate(
     { room: roomCode },
     { $inc: { turn: 1 } }
   );
   const turn = turnBeforeInc + 1;
-  const currentPlayerId = clients[turn % clients.length];
+  const currentPlayerId = players[turn % players.length].id;
   const currentWord = wordList[turn];
   io.to(roomCode).emit('nextWord', { currentWord, currentPlayerId });
+}
+
+async function decrementLives(socket) {
+  const roomCode = [...socket.rooms][1];
+  const {
+    value: { players },
+  } = await mongoCollection.findOneAndUpdate(
+    { room: roomCode, 'players.id': socket.id },
+    { $inc: { 'players.$.lives': -1 } }
+  );
+  const { lives } = players.find(({ id }) => id === socket.id);
+  if (!(lives - 1)) {
+    const { isSessionOver, remainingPlayers } = await removePlayer(socket, roomCode);
+    // Maybe dont remove them from bottom, just display they have 0 lives, X over name maybe?
+    // Leave this until ^ implemented
+    io.to(roomCode).emit('playerListUpdate', remainingPlayers);
+  }
+  // Emit to room session is over once everyone has lost their lives
 }
 
 async function disconnecting(socket) {
@@ -118,7 +139,7 @@ async function disconnecting(socket) {
     socket,
     roomCode
   );
-  io.to(roomCode).emit('newPlayer', remainingPlayers);
+  io.to(roomCode).emit('playerListUpdate', remainingPlayers);
   if (isSessionOver) {
     removeSession(roomCode);
   }
